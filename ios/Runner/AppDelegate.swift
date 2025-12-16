@@ -56,7 +56,7 @@ import CarPlay
 }
 
 private func setExcludeFromiCloudBackup(_ dir: URL, isExcluded: Bool) throws {
-//    Awkwardly make a mutable copy of the dir
+    // Awkwardly make a mutable copy of the dir
     var mutableDir = dir
     
     var values = URLResourceValues()
