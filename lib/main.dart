@@ -379,12 +379,6 @@ Future<void> _setupPlaybackServices() async {
   await MusicPlayerBackgroundTask.configureAudioSession();
 
   GetIt.instance.registerSingleton<AndroidAutoHelper>(AndroidAutoHelper());
-  
-  // Register CarPlay helper for iOS
-  if (Platform.isIOS) {
-    GetIt.instance.registerSingleton<CarPlayHelper>(CarPlayHelper());
-    GetIt.instance<CarPlayHelper>().initialize();
-  }
 
   final audioHandler = await AudioService.init(
     builder: () => MusicPlayerBackgroundTask(),
@@ -415,6 +409,12 @@ Future<void> _setupPlaybackServices() async {
   audioHandler.onQueueServiceAvailable(); // breaking circular dependency
   GetIt.instance.registerSingleton(PlaybackHistoryService());
   GetIt.instance.registerSingleton(AudioServiceHelper());
+
+  // Register CarPlay helper for iOS after all dependencies are available
+  if (Platform.isIOS) {
+    GetIt.instance.registerSingleton<CarPlayHelper>(CarPlayHelper());
+    GetIt.instance<CarPlayHelper>().initialize();
+  }
 
   // Begin to restore queue
   unawaited(queueService.performInitialQueueLoad().catchError((dynamic x) => GlobalSnackbar.error(x)));
