@@ -1,7 +1,8 @@
 import CarPlay
 import Flutter
 
-@available(iOS 13.0, *)
+@available(iOS 12.0, *)
+@objc(CarPlaySceneDelegate)
 class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate {
 
     var interfaceController: CPInterfaceController?
@@ -10,7 +11,7 @@ class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate {
         super.init()
         NSLog("CarPlay: CarPlaySceneDelegate initialized")
     }
-
+    
     func templateApplicationScene(_ templateApplicationScene: CPTemplateApplicationScene,
                                 didConnect interfaceController: CPInterfaceController) {
         NSLog("CarPlay: Scene delegate didConnect called")
@@ -18,7 +19,7 @@ class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate {
 
         // Create root template
         let rootTemplate = createRootTemplate()
-        NSLog("CarPlay: Setting root template")
+        NSLog("CarPlay: Setting root template with \(rootTemplate.templates.count) tabs")
         interfaceController.setRootTemplate(rootTemplate, animated: true, completion: { success, error in
             if let error = error {
                 NSLog("CarPlay: Error setting root template: \(error)")
@@ -30,7 +31,7 @@ class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate {
         // Notify Flutter about CarPlay connection
         notifyFlutter(event: "carplay_connected")
     }
-
+    
     func templateApplicationScene(_ templateApplicationScene: CPTemplateApplicationScene,
                                 didDisconnectInterfaceController interfaceController: CPInterfaceController) {
         NSLog("CarPlay: Scene delegate didDisconnect called")
@@ -39,19 +40,28 @@ class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate {
         // Notify Flutter about CarPlay disconnection
         notifyFlutter(event: "carplay_disconnected")
     }
-
-    private func createRootTemplate() -> CPListTemplate {
-        // For now, just return a single list template
-        // CPTabBarTemplate seems to have strict validation requirements that are failing
+    
+    private func createRootTemplate() -> CPTabBarTemplate {
+        // Browse tab
         let browseTemplate = CPListTemplate(title: "Browse", sections: [])
-        return browseTemplate
+        browseTemplate.tabImage = UIImage(systemName: "music.note.list")
+        
+        // Now Playing tab
+        let nowPlayingTemplate = CPNowPlayingTemplate.shared
+        nowPlayingTemplate.tabImage = UIImage(systemName: "play.circle")
+        
+        // Search tab
+        let searchTemplate = CPListTemplate(title: "Search", sections: [])
+        searchTemplate.tabImage = UIImage(systemName: "magnifyingglass")
+        
+        return CPTabBarTemplate(templates: [browseTemplate, nowPlayingTemplate, searchTemplate])
     }
-
+    
     private func notifyFlutter(event: String) {
         guard let flutterViewController = UIApplication.shared.delegate?.window??.rootViewController as? FlutterViewController else {
             return
         }
-
+        
         let channel = FlutterMethodChannel(name: "finamp/carplay", binaryMessenger: flutterViewController.binaryMessenger)
         channel.invokeMethod(event, arguments: nil)
     }

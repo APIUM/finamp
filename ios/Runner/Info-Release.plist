@@ -16,9 +16,20 @@
 					<key>UISceneDelegateClassName</key>
 					<string>FlutterSceneDelegate</string>
 					<key>UISceneConfigurationName</key>
-					<string>flutter</string>
+					<string>Default Configuration</string>
 					<key>UISceneStoryboardFile</key>
 					<string>Main</string>
+				</dict>
+			</array>
+			<key>CPTemplateApplicationSceneSessionRoleApplication</key>
+			<array>
+				<dict>
+					<key>UISceneClassName</key>
+					<string>CPTemplateApplicationScene</string>
+					<key>UISceneConfigurationName</key>
+					<string>CarPlay</string>
+					<key>UISceneDelegateClassName</key>
+					<string>$(PRODUCT_MODULE_NAME).CarPlaySceneDelegate</string>
 				</dict>
 			</array>
 		</dict>
@@ -85,21 +96,6 @@
 	</array>
 	<key>MKDirectionsApplicationSupportedModes</key>
 	<array/>
-	<key>UIScene</key>
-	<dict>
-		<key>UISceneConfigurations</key>
-		<dict>
-			<key>CPTemplateApplicationSceneSessionRoleApplication</key>
-			<array>
-				<dict>
-					<key>UISceneConfigurationName</key>
-					<string>CarPlay</string>
-					<key>UISceneDelegateClassName</key>
-					<string>CarPlaySceneDelegate</string>
-				</dict>
-			</array>
-		</dict>
-	</dict>
 	<key>UIFileSharingEnabled</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>
