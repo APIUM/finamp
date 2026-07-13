@@ -90,6 +90,18 @@ extension type const ResolvedSortConfig._(SortAndFilterConfiguration config) imp
     return ResolvedSortConfig._(config.copyWith(genreFilter: genre));
   }
 
+  /// Replaces any existing letter filter with [letter] ("A".."Z" or "#") and forces
+  /// ascending sort-name order, matching jellyfin-web's alpha-picker contract where
+  /// "#" maps to `NameLessThan=A` for everything that doesn't start with a letter.
+  ResolvedSortConfig copyWithLetter(String letter) {
+    final processedFilters = config.filters.toSet();
+    processedFilters.removeWhere((x) => x.type == ItemFilterType.startsWithCharacter);
+    processedFilters.add(ItemFilter(type: ItemFilterType.startsWithCharacter, extras: letter));
+    return ResolvedSortConfig._(
+      config.copyWith(sortBy: SortBy.sortName, sortOrder: SortOrder.ascending, filters: processedFilters),
+    );
+  }
+
   ResolvedSortConfig.skipResolving(this.config);
 
   static const defaultSort = ResolvedSortConfig._(
