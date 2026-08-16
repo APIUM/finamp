@@ -44,14 +44,21 @@ final _carPlayLogger = Logger("CarPlay");
 /// queried (older head units, or the query failing outright).
 const _fallbackMaxListItems = 250;
 
-/// Fallback section cap, same reasoning as [_fallbackMaxListItems]. 27 covers
-/// the full A-Z + "#" letter picker.
-const _fallbackMaxListSections = 27;
+/// Sections the letter picker occupies: one per letter, plus "#".
+const _letterSectionCount = 27;
+
+/// Fallback section cap, same reasoning as [_fallbackMaxListItems]. Covers the
+/// letter picker plus a leading action row.
+const _fallbackMaxListSections = _letterSectionCount + 1;
 
 /// Debug override for testing progressive loading and the letter drill-down
 /// without a huge library, e.g. `--dart-define=CARPLAY_ITEM_CAP=30`. 0 means
 /// "use the head unit's real cap".
 const _itemCapOverride = int.fromEnvironment('CARPLAY_ITEM_CAP', defaultValue: 0);
+
+/// Debug override for the section cap, same convention as [_itemCapOverride].
+/// Below [_letterSectionCount] it exercises the flat-list fallback.
+const _sectionCapOverride = int.fromEnvironment('CARPLAY_SECTION_CAP', defaultValue: 0);
 
 /// Online Tracks skips the letter picker: Jellyfin bakes track numbers into
 /// each track's SortName, which the NameStartsWith letter filter compares
@@ -129,6 +136,7 @@ class CarPlayHelper {
   }
 
   Future<int> _getMaxListSections() async {
+    if (_sectionCapOverride > 0) return _sectionCapOverride;
     final reported = _cachedMaxListSections ??= await CPListTemplate.getMaximumSectionCount() ?? _fallbackMaxListSections;
     return reported > 0 ? reported : _fallbackMaxListSections;
   }
@@ -557,17 +565,37 @@ class CarPlayHelper {
     final musicRequest = _asMusicScreenRequest(request);
     final sortBy = _sortConfigOf(request).sortBy;
 
+    // The picker needs one section per letter, plus one for a leading action
+    // row (e.g. Shuffle All) on the views that have one.
+    final requiredSections = _letterSectionCount + (leadingItemBuilder != null ? 1 : 0);
+
+    final String? letterLayerRefusal;
+    if (sortBy == SortBy.random) {
+      letterLayerRefusal = "random sort has no letter order";
+    } else if (!_letterLayerSupported(musicRequest.tab)) {
+      letterLayerRefusal = "tab does not support letter filtering";
+    } else if (maxSections < requiredSections) {
+      letterLayerRefusal = "head unit allows $maxSections sections, picker needs $requiredSections";
+    } else {
+      letterLayerRefusal = null;
+    }
+
     var useLetterLayer = false;
-    // 28 sections: A-Z + "#" + a possible leading action row (e.g. Shuffle All).
-    if (sortBy != SortBy.random && maxSections >= 28 && _letterLayerSupported(musicRequest.tab)) {
+    int? total;
+    if (letterLayerRefusal == null) {
       try {
-        final total = await providerRef.read(musicScreenItemCountProvider(musicRequest).future);
-        useLetterLayer = total > maxItems;
-        _carPlayLogger.info("CarPlay ${musicRequest.tab} has $total items (cap $maxItems), letters: $useLetterLayer");
+        final count = await providerRef.read(musicScreenItemCountProvider(musicRequest).future);
+        total = count;
+        useLetterLayer = count > maxItems;
       } catch (e) {
         _carPlayLogger.warning("Failed to check CarPlay library size, falling back to a flat list: $e");
       }
     }
+
+    _carPlayLogger.info(
+      "CarPlay ${musicRequest.tab}: ${total ?? '?'} items, caps $maxItems items / $maxSections sections, "
+      "letters: $useLetterLayer${letterLayerRefusal == null ? '' : ' ($letterLayerRefusal)'}",
+    );
 
     if (useLetterLayer) {
       await _showLetterPickerTemplate(
@@ -592,7 +620,7 @@ class CarPlayHelper {
     }
   }
 
-  /// Pushes a fixed 27-section (A-Z, "#") letter picker. Tapping a letter
+  /// Pushes the [_letterSectionCount]-section letter picker. Tapping a letter
   /// pushes the matching filtered list via [_pushProgressiveListTemplate].
   /// Each section carries an explicit `sectionIndexTitle` but no visible
   /// header, so the letter isn't rendered twice, and CarPlay's side scrubber
