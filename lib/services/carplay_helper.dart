@@ -1,21 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:math';
-import 'dart:typed_data';
-import 'dart:ui' as ui;
 
 import 'package:finamp/components/MusicScreen/sort_and_filter_row.dart';
 import 'package:finamp/components/global_snackbar.dart';
 import 'package:finamp/models/music_models.dart';
-import 'package:finamp/services/album_image_provider.dart';
 import 'package:finamp/services/music_player_background_task.dart';
 import 'package:finamp/services/music_providers.dart';
 import 'package:finamp/services/music_screen_provider.dart';
-import 'package:flutter/painting.dart';
 import 'package:flutter/scheduler.dart';
-import 'package:flutter/material.dart' show Icons;
-import 'package:flutter/widgets.dart' show IconData;
 import 'package:flutter_carplay/flutter_carplay.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:infinite_scroll_pagination/infinite_scroll_pagination.dart';
@@ -26,8 +19,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:get_it/get_it.dart';
 import 'package:hive_ce/hive.dart';
 import 'package:logging/logging.dart';
-import 'package:path/path.dart' as path_helper;
-import 'package:path_provider/path_provider.dart';
 
 import 'favorite_provider.dart';
 import 'finamp_settings_helper.dart';
@@ -36,7 +27,7 @@ import 'audio_service_helper.dart';
 import 'queue_service.dart';
 import 'item_helper.dart';
 import 'radio_service_helper.dart' as radio;
-import 'item_by_id_provider.dart';
+import 'carplay_image_helper.dart';
 
 final _carPlayLogger = Logger("CarPlay");
 
@@ -66,10 +57,6 @@ const _sectionCapOverride = int.fromEnvironment('CARPLAY_SECTION_CAP', defaultVa
 /// only change needed once the server fixes Audio SortName.
 const _enableOnlineTracksLetterPicker = false;
 
-/// Image size for CarPlay artwork. 100x100 is plenty for car displays
-/// and transfers much faster than 200x200.
-const _carPlayImageSize = 100;
-
 /// First page size for CarPlay lists, kept small so lists appear quickly.
 /// The background fill catches up in [musicScreenPageSize] chunks.
 const _carPlayFirstPageSize = 30;
@@ -83,19 +70,6 @@ const _carPlayRecentlyPlayedLimit = 5;
 /// Maximum number of queues to show in the CarPlay home "Recent Queues" art
 /// row, before clamping to the plugin's runtime grid-image limit.
 const _maxRecentQueues = 6;
-
-/// Last resort artwork stand-in when the rendered placeholder tile is unavailable.
-const _carPlayFallbackImage = 'sfsymbol:music.note.list';
-
-/// Number of distinct albums composed into a Recent Queues collage cover,
-/// and the side length in pixels of each tile within it.
-const _collageTileCount = 4;
-const _collageTileSize = 100;
-
-/// Maximum number of upcoming tracks to resolve while hunting for
-/// [_collageTileCount] distinct albums for a queue's collage cover, so a
-/// huge queue doesn't spam the server with lookups.
-const _maxCollageTrackScan = 20;
 
 class CarPlayHelper {
   ConnectionStatusTypes connectionStatus = ConnectionStatusTypes.unknown;
@@ -115,13 +89,14 @@ class CarPlayHelper {
   CPListTemplate? _homeTemplate;
   bool _isSettingRootTemplate = false;
   bool _isUpdatingNowPlayingButtons = false;
-  int _recentQueueImageFillRun = 0;
+  int _recentQueuesListImageRun = 0;
   BaseItemId? _nowPlayingButtonsTrackId;
   void Function()? _cancelRadioPreview;
 
   bool get isUserLoggedIn => _finampUserHelper.currentUser != null;
 
   final _queueService = GetIt.instance<QueueService>();
+  final _images = CarPlayImageHelper();
 
   /// Runtime caps from `CPListTemplate.getMaximum*Count()`, reset on every
   /// CarPlay connect since different head units allow different caps. A
@@ -141,19 +116,6 @@ class CarPlayHelper {
     final reported = _cachedMaxListSections ??=
         await CPListTemplate.getMaximumSectionCount() ?? _fallbackMaxListSections;
     return reported > 0 ? reported : _fallbackMaxListSections;
-  }
-
-  /// Resolves the image URI for a CarPlay list item via [albumImageProvider],
-  /// so CarPlay shares Finamp's image cache. Returns a `file://` URI for
-  /// downloaded images and a network URL otherwise.
-  String? _getCarPlayImageUri(BaseItemDto item) {
-    if (item.imageId == null) return null;
-    return providerRef
-        .read(
-          albumImageProvider(AlbumImageRequest(item: item, maxHeight: _carPlayImageSize, maxWidth: _carPlayImageSize)),
-        )
-        .uri
-        ?.toString();
   }
 
   void setupCarplay() {
@@ -298,7 +260,7 @@ class CarPlayHelper {
 
     final isShuffled = _queueService.playbackOrder == FinampPlaybackOrder.shuffled;
     final shuffleIcon =
-        await _getIconFontImageUri(isShuffled ? TablerIcons.arrows_shuffle : TablerIcons.arrows_right, 40) ??
+        await _images.iconFontImageUri(isShuffled ? TablerIcons.arrows_shuffle : TablerIcons.arrows_right, 40) ??
         'sfsymbol:shuffle';
     final buttons = <CPNowPlayingButton>[
       CPNowPlayingImageButton(image: shuffleIcon, onPress: () => _queueService.togglePlaybackOrder()),
@@ -307,7 +269,7 @@ class CarPlayHelper {
     if (currentTrack != null && !isOffline) {
       final isFavorite = providerRef.read(isFavoriteProvider(currentTrack));
       final heartIcon =
-          await _getIconFontImageUri(isFavorite ? TablerIcons.heart_filled : TablerIcons.heart, 40) ??
+          await _images.iconFontImageUri(isFavorite ? TablerIcons.heart_filled : TablerIcons.heart, 40) ??
           (isFavorite ? 'sfsymbol:heart.fill' : 'sfsymbol:heart');
       buttons.add(
         CPNowPlayingImageButton(
@@ -316,7 +278,7 @@ class CarPlayHelper {
         ),
       );
 
-      final radioIcon = await _getIconFontImageUri(TablerIcons.radio, 40) ?? 'sfsymbol:radio';
+      final radioIcon = await _images.iconFontImageUri(TablerIcons.radio, 40) ?? 'sfsymbol:radio';
       buttons.add(
         CPNowPlayingImageButton(
           image: radioIcon,
@@ -443,7 +405,7 @@ class CarPlayHelper {
           CPListItem(
             text: previewTrack.name ?? l10n.unknown,
             detailText: previewTrack.artists?.join(", ") ?? previewTrack.albumArtist,
-            image: _getCarPlayImageUri(previewTrack),
+            image: _images.imageUri(previewTrack),
             onPress: (complete, self) async {
               try {
                 await startRadio(previewTrack);
@@ -1032,7 +994,7 @@ class CarPlayHelper {
           return CPListItem(
             text: album.name ?? GlobalSnackbar.requireL10n.unknownName,
             detailText: album.albumArtist,
-            image: _getCarPlayImageUri(album),
+            image: _images.imageUri(album),
             onPress: (complete, self) async {
               await showCollectionTracksTemplate(album);
               complete();
@@ -1053,263 +1015,11 @@ class CarPlayHelper {
     }
   }
 
-  /// Resolves the art-row image for a saved queue: a 2x2 collage of covers
-  /// from the next [_collageTileCount] distinct albums coming up in the
-  /// queue, falling back to the current track's own artwork, then to a
-  /// placeholder icon, so a missing track or missing artwork doesn't shift
-  /// indices out of alignment with the queue list.
-  Future<String> _getRecentQueueImage(FinampStorableQueueInfo info) async {
-    try {
-      final collage = await _buildRecentQueueCollage(info);
-      if (collage != null) {
-        return collage;
-      }
-    } catch (e) {
-      _carPlayLogger.warning("Failed to build collage for recent queue: $e");
-    }
-    return _getRecentQueueCoverImage(info);
-  }
-
-  /// Resolves the current track's own artwork for a saved queue, falling
-  /// back to a placeholder icon. Used when a collage can't be built.
-  Future<String> _getRecentQueueCoverImage(FinampStorableQueueInfo info) async {
-    final currentTrackId = info.currentTrack;
-    if (currentTrackId == null) {
-      return _getPlaceholderImageUri();
-    }
-    try {
-      final track = await providerRef.read(itemByIdProvider(currentTrackId).future);
-      if (track == null) {
-        return _getPlaceholderImageUri();
-      }
-      return _getCarPlayImageUri(track) ?? await _getPlaceholderImageUri();
-    } catch (e) {
-      _carPlayLogger.warning("Failed to resolve artwork for recent queue: $e");
-      return _getPlaceholderImageUri();
-    }
-  }
-
-  /// Finds up to [_collageTileCount] distinct albums among the tracks
-  /// coming up in [info] (current track, then queue), resolving each
-  /// candidate's cover as it's found so a single failed cover doesn't sink
-  /// the whole collage, then composes the resolved covers into a PNG cached
-  /// under the temp directory and returns a `file://` URI. Returns null if
-  /// no cover resolves at all.
-  Future<String?> _buildRecentQueueCollage(FinampStorableQueueInfo info) async {
-    // Prefer albums still coming up, then pad with the most recently played
-    // ones so a queue archived near its end can still fill the collage.
-    final upcomingIds = <BaseItemId>[
-      if (info.currentTrack != null) info.currentTrack!,
-      ...info.nextUp,
-      ...info.queue,
-      ...info.previousTracks.reversed,
-    ];
-
-    final albumImages = <ui.Image>[];
-    final usedAlbumIds = <String>[];
-    final seenAlbumIds = <String>{};
-    var scanned = 0;
-    for (final id in upcomingIds) {
-      if (albumImages.length >= _collageTileCount || scanned >= _maxCollageTrackScan) {
-        break;
-      }
-      scanned++;
-      final track = await providerRef.read(itemByIdProvider(id).future);
-      final albumId = track?.albumId?.raw;
-      if (albumId == null || !seenAlbumIds.add(albumId)) {
-        continue;
-      }
-      final image = await _resolveCollageTileImage(track!);
-      if (image == null) {
-        // Cover failed to resolve or decode. Keep scanning for a
-        // replacement instead of failing the whole collage.
-        continue;
-      }
-      albumImages.add(image);
-      usedAlbumIds.add(albumId);
-    }
-
-    if (albumImages.isEmpty) {
-      return null;
-    }
-
-    // Anything short of a full 2x2 grid falls back to the best single
-    // cover scaled across the whole canvas, so every tile in the Recent
-    // Queues row stays the same size.
-    final tiles = albumImages.length == _collageTileCount ? albumImages : [albumImages.first];
-    final tileIdsKey = albumImages.length == _collageTileCount ? usedAlbumIds : [usedAlbumIds.first];
-
-    final cacheFile = File(
-      path_helper.join(
-        (await getTemporaryDirectory()).path,
-        'carplay_queue_collage_${info.creation}_${tileIdsKey.join(',').hashCode}.png',
-      ),
-    );
-    if (await cacheFile.exists()) {
-      return Uri.file(cacheFile.path).toString();
-    }
-
-    final bytes = await _composeCollage(tiles);
-    if (bytes == null) {
-      return null;
-    }
-    await cacheFile.writeAsBytes(bytes, flush: true);
-    return Uri.file(cacheFile.path).toString();
-  }
-
-  /// Resolves a track's album cover as a decoded [ui.Image] via
-  /// [albumImageProvider], reusing Finamp's image cache and auth. Returns
-  /// null if the artwork can't be resolved or decoded.
-  Future<ui.Image?> _resolveCollageTileImage(BaseItemDto track) async {
-    final imageProvider = providerRef
-        .read(
-          albumImageProvider(AlbumImageRequest(item: track, maxWidth: _collageTileSize, maxHeight: _collageTileSize)),
-        )
-        .image;
-    if (imageProvider == null) {
-      return null;
-    }
-
-    final completer = Completer<ui.Image?>();
-    final stream = imageProvider.resolve(ImageConfiguration.empty);
-    late ImageStreamListener listener;
-    listener = ImageStreamListener(
-      (image, synchronousCall) {
-        stream.removeListener(listener);
-        completer.complete(image.image);
-      },
-      onError: (error, stackTrace) {
-        stream.removeListener(listener);
-        completer.complete(null);
-      },
-    );
-    stream.addListener(listener);
-    return completer.future;
-  }
-
-  /// Composes [images] into a square collage PNG the same size regardless
-  /// of tile count, returning the encoded bytes, or null if encoding fails.
-  /// A single image fills the whole canvas. [_collageTileCount] images are
-  /// drawn as 2x2 quadrants.
-  Future<Uint8List?> _composeCollage(List<ui.Image> images) async {
-    final tileSize = _collageTileSize.toDouble();
-    final collageSize = tileSize * 2;
-    final recorder = ui.PictureRecorder();
-    final canvas = ui.Canvas(recorder, ui.Rect.fromLTWH(0, 0, collageSize, collageSize));
-    if (images.length == 1) {
-      final image = images.first;
-      canvas.drawImageRect(
-        image,
-        ui.Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
-        ui.Rect.fromLTWH(0, 0, collageSize, collageSize),
-        ui.Paint(),
-      );
-    } else {
-      for (var i = 0; i < images.length; i++) {
-        final image = images[i];
-        final dx = (i % 2) * tileSize;
-        final dy = (i ~/ 2) * tileSize;
-        canvas.drawImageRect(
-          image,
-          ui.Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
-          ui.Rect.fromLTWH(dx, dy, tileSize, tileSize),
-          ui.Paint(),
-        );
-      }
-    }
-    final picture = recorder.endRecording();
-    final collageImage = await picture.toImage(collageSize.round(), collageSize.round());
-    final byteData = await collageImage.toByteData(format: ui.ImageByteFormat.png);
-    return byteData?.buffer.asUint8List();
-  }
-
-  String? _placeholderImage;
-
-  /// Renders the main UI's artwork placeholder, the album glyph on a card
-  /// coloured tile, to a cached PNG and returns its file URI.
-  Future<String> _getPlaceholderImageUri() async {
-    if (_placeholderImage != null) {
-      return _placeholderImage!;
-    }
-    try {
-      const size = 100.0;
-      final cacheFile = File(
-        path_helper.join((await getTemporaryDirectory()).path, 'carplay_placeholder_${size.round()}.png'),
-      );
-      if (!await cacheFile.exists()) {
-        final recorder = ui.PictureRecorder();
-        final canvas = ui.Canvas(recorder, ui.Rect.fromLTWH(0, 0, size, size));
-        canvas.drawRect(ui.Rect.fromLTWH(0, 0, size, size), ui.Paint()..color = const ui.Color(0xFF424242));
-        final painter = TextPainter(
-          text: TextSpan(
-            text: String.fromCharCode(Icons.album.codePoint),
-            style: TextStyle(
-              fontFamily: Icons.album.fontFamily,
-              fontSize: size * 0.4,
-              color: const ui.Color(0xB3FFFFFF),
-            ),
-          ),
-          textDirection: ui.TextDirection.ltr,
-        )..layout();
-        painter.paint(canvas, ui.Offset((size - painter.width) / 2, (size - painter.height) / 2));
-        final image = await recorder.endRecording().toImage(size.round(), size.round());
-        final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
-        if (byteData == null) {
-          return _carPlayFallbackImage;
-        }
-        await cacheFile.writeAsBytes(byteData.buffer.asUint8List(), flush: true);
-      }
-      _placeholderImage = Uri.file(cacheFile.path).toString();
-    } catch (e) {
-      _carPlayLogger.warning("Failed to render artwork placeholder: $e");
-      _placeholderImage = _carPlayFallbackImage;
-    }
-    return _placeholderImage!;
-  }
-
-  /// Renders an icon font glyph to a PNG in the temp directory and returns
-  /// its file URI, so CarPlay buttons can show the same icons as the phone
-  /// UI. Only the glyph's alpha matters, CarPlay tints button images itself.
-  Future<String?> _getIconFontImageUri(IconData icon, double size) async {
-    final cacheFile = File(
-      path_helper.join((await getTemporaryDirectory()).path, 'carplay_icon_${icon.codePoint}_${size.round()}.png'),
-    );
-    if (!await cacheFile.exists()) {
-      final recorder = ui.PictureRecorder();
-      final canvas = ui.Canvas(recorder, ui.Rect.fromLTWH(0, 0, size, size));
-      final painter = TextPainter(
-        text: TextSpan(
-          text: String.fromCharCode(icon.codePoint),
-          style: TextStyle(
-            fontFamily: icon.fontFamily,
-            package: icon.fontPackage,
-            fontSize: size,
-            color: const ui.Color(0xFFFFFFFF),
-          ),
-        ),
-        textDirection: ui.TextDirection.ltr,
-      )..layout();
-      painter.paint(canvas, ui.Offset((size - painter.width) / 2, (size - painter.height) / 2));
-      final image = await recorder.endRecording().toImage(size.round(), size.round());
-      final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
-      if (byteData == null) {
-        return null;
-      }
-      await cacheFile.writeAsBytes(byteData.buffer.asUint8List(), flush: true);
-    }
-    return Uri.file(cacheFile.path).toString();
-  }
-
   /// Archives the live queue, restores [info] at its saved track and seek
   /// position, then shows CarPlay's Now Playing screen. Shared by the
   /// Recent Queues art row's per-image tap and its pushed full-history list.
   Future<void> _resumeSavedQueue(FinampStorableQueueInfo info) async {
-    // The cold-launch startup restore commonly hasn't settled yet, which
-    // would otherwise error as "already loading". Its own failure is
-    // unrelated to this queue, so ignore it.
-    try {
-      await _queueService.performInitialQueueLoad();
-    } catch (_) {}
+    await _queueService.initialQueueLoaded;
     _queueService.archiveSavedQueue();
     await _queueService.loadSavedQueue(info);
     await FlutterCarplay.showSharedNowPlaying();
@@ -1326,7 +1036,7 @@ class CarPlayHelper {
     _isPushingPageUpdate = true;
     try {
       final l10n = GlobalSnackbar.requireL10n;
-      final placeholderImage = await _getPlaceholderImageUri();
+      final placeholderImage = await _images.placeholderImageUri();
       final items = List.generate(queueHistory.length, (index) {
         final info = queueHistory[index];
         final remaining = info.trackCount - info.previousTracks.length;
@@ -1353,23 +1063,20 @@ class CarPlayHelper {
           systemIcon: 'clock.arrow.circlepath',
         ),
       );
-      unawaited(_fillRecentQueueImages(queueHistory, items));
+      unawaited(_fillRecentQueuesListImages(queueHistory, items));
     } finally {
       _isPushingPageUpdate = false;
     }
   }
 
-  /// Streams the pushed Recent Queues list's collage covers in one queue at
-  /// a time via [CPListItem.setImage], so the list opens instantly and
-  /// building covers never blocks CarPlay navigation. A newer run abandons
-  /// any older one still going.
-  Future<void> _fillRecentQueueImages(List<FinampStorableQueueInfo> queueHistory, List<CPListItem> items) async {
-    final run = ++_recentQueueImageFillRun;
+  /// Fills the pushed Recent Queues list covers after it is on screen.
+  Future<void> _fillRecentQueuesListImages(List<FinampStorableQueueInfo> queueHistory, List<CPListItem> items) async {
+    final run = ++_recentQueuesListImageRun;
     try {
-      final placeholderImage = await _getPlaceholderImageUri();
+      final placeholderImage = await _images.placeholderImageUri();
       for (var i = 0; i < items.length; i++) {
-        final image = await _getRecentQueueImage(queueHistory[i]);
-        if (run != _recentQueueImageFillRun) {
+        final image = await _images.recentQueueImage(queueHistory[i]);
+        if (run != _recentQueuesListImageRun) {
           return;
         }
         if (image != placeholderImage) {
@@ -1430,14 +1137,14 @@ class CarPlayHelper {
     if (recentlyAddedFetched.isNotEmpty) {
       final recentlyAddedLimit = await _clampToGridImageLimit(recentlyAddedFetched.length);
       final recentlyAdded = recentlyAddedFetched.take(recentlyAddedLimit).toList();
-      final placeholderImage = await _getPlaceholderImageUri();
+      final placeholderImage = await _images.placeholderImageUri();
 
       sections.add(
         CPListSection(
           items: [
             CPListImageRowItem(
               text: GlobalSnackbar.requireL10n.recentlyAdded,
-              gridImages: recentlyAdded.map((album) => _getCarPlayImageUri(album) ?? placeholderImage).toList(),
+              gridImages: recentlyAdded.map((album) => _images.imageUri(album) ?? placeholderImage).toList(),
               onPress: (complete, self) async {
                 try {
                   await _showRecentlyAddedTemplate();
@@ -1476,7 +1183,7 @@ class CarPlayHelper {
           CPListItem(
             text: baseItem.name ?? GlobalSnackbar.requireL10n.unknown,
             detailText: baseItem.artists?.join(", ") ?? baseItem.albumArtist,
-            image: _getCarPlayImageUri(baseItem),
+            image: _images.imageUri(baseItem),
             onPress: (complete, self) async {
               if (!FinampSettingsHelper.finampSettings.isOffline) {
                 final audioServiceHelper = GetIt.instance<AudioServiceHelper>();
@@ -1513,7 +1220,7 @@ class CarPlayHelper {
       final queueLimit = await _clampToGridImageLimit(_maxRecentQueues);
       final recentQueues = recentQueueHistory.take(queueLimit).toList();
 
-      final queueImages = await Future.wait(recentQueues.map(_getRecentQueueImage));
+      final queueImages = await Future.wait(recentQueues.map(_images.recentQueueImage));
 
       sections.add(
         CPListSection(
@@ -1716,7 +1423,7 @@ class CarPlayHelper {
           CPListItem(
             text: item.name ?? GlobalSnackbar.requireL10n.unknownName,
             detailText: item.artists?.join(", ") ?? item.albumArtist,
-            image: _getCarPlayImageUri(item),
+            image: _images.imageUri(item),
             onPress: (complete, self) async {
               await playItem(parent, index: index);
               complete();
@@ -1764,7 +1471,7 @@ class CarPlayHelper {
             (item, index) => CPListItem(
               text: item.name ?? GlobalSnackbar.requireL10n.unknown,
               detailText: item.artists?.join(", ") ?? item.albumArtist,
-              image: _getCarPlayImageUri(item),
+              image: _images.imageUri(item),
               onPress: (complete, self) async {
                 if (tabType == ContentType.genres && genreFilter == null) {
                   await showBrowsableListTemplate(tabType: tabType, genreFilter: item);
@@ -1804,7 +1511,7 @@ class CarPlayHelper {
             (item, index) => CPListItem(
               text: item.name ?? GlobalSnackbar.requireL10n.unknownName,
               detailText: item.artists?.join(", ") ?? item.albumArtist,
-              image: _getCarPlayImageUri(item),
+              image: _images.imageUri(item),
               onPress: (complete, self) async {
                 await _startSliceFromPlayable(request, index: index);
                 complete();
@@ -1880,7 +1587,7 @@ class CarPlayHelper {
         artistAlbums.items.add(
           CPListItem(
             text: item.name ?? GlobalSnackbar.requireL10n.unknownName,
-            image: _getCarPlayImageUri(item),
+            image: _images.imageUri(item),
             onPress: (complete, self) async {
               await showCollectionTracksTemplate(item);
               complete();
