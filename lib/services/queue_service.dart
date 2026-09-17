@@ -1176,6 +1176,47 @@ class QueueService {
     });
   }
 
+  /// Replaces the upcoming tracks with [slice] without interrupting the current track.
+  Future<void> replaceUpcoming(PlayableSlice slice) async {
+    if (_audioHandler.audioSources.isEmpty || _currentTrack == null) {
+      return _startSlicePlayback(slice: slice);
+    }
+
+    final upcomingCount = _queueNextUp.length + _queue.length;
+
+    archiveSavedQueue();
+
+    _order.originalSource = slice.source;
+
+    await addToQueue(slice);
+
+    final adjustedIndicesToRemove = List.generate(
+      upcomingCount,
+      (index) => getActualIndexByLinearIndex(_currentQueueIndex + index + 1),
+    )..sort();
+
+    if (upcomingCount > 0) {
+      int currentRangeEnd = adjustedIndicesToRemove.last;
+      int currentRangeStart = currentRangeEnd;
+      // remove from the back to avoid index shifting
+      for (final adjustedIndex in adjustedIndicesToRemove.reversed.skip(1)) {
+        if (adjustedIndex == currentRangeStart - 1) {
+          currentRangeStart = adjustedIndex;
+        } else {
+          // remove in batches to improve performance
+          await _audioHandler.removeFinampQueueItemRange(currentRangeStart, currentRangeEnd + 1);
+          currentRangeStart = adjustedIndex;
+          currentRangeEnd = adjustedIndex;
+        }
+      }
+      await _audioHandler.removeFinampQueueItemRange(currentRangeStart, currentRangeEnd + 1);
+    }
+
+    _buildQueueFromNativePlayerQueue();
+
+    _queueServiceLogger.fine("Replaced $upcomingCount upcoming items with items from '${slice.source.name}'");
+  }
+
   Future<void> removeQueueItem(FinampQueueItem queueItem) async {
     int? offset = getQueue().getOffsetForQueueItem(queueItem);
     if (offset == null) {

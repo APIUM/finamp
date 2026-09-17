@@ -378,7 +378,7 @@ class CarPlayHelper {
           tracks.insert(0, firstTrack);
         }
         started = true;
-        await radio.startRadioPlaybackWithTracks(track, preview.radioMode, tracks);
+        await radio.startRadioPlaybackWithTracks(track, preview.radioMode, tracks, keepCurrentTrack: true);
         _cancelRadioPreview = null;
       } catch (e) {
         started = false;
@@ -426,7 +426,7 @@ class CarPlayHelper {
       _cancelRadioPreview = null;
       final preview = await generation;
       if (cancelled) return;
-      await radio.startRadioPlaybackWithTracks(track, preview.radioMode, preview.tracks);
+      await radio.startRadioPlaybackWithTracks(track, preview.radioMode, preview.tracks, keepCurrentTrack: true);
       return;
     }
 

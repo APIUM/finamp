@@ -206,8 +206,13 @@ Future<({RadioMode radioMode, List<BaseItemDto> tracks})> generateRadioPreview(
   return (radioMode: selectedRadioMode, tracks: generatedTracks);
 }
 
-/// Starts playback of a radio queue from tracks already produced by [generateRadioPreview].
-Future<void> startRadioPlaybackWithTracks(BaseItemDto source, RadioMode radioMode, List<BaseItemDto> tracks) async {
+/// Starts a radio queue from preview tracks, after the current track when [keepCurrentTrack].
+Future<void> startRadioPlaybackWithTracks(
+  BaseItemDto source,
+  RadioMode radioMode,
+  List<BaseItemDto> tracks, {
+  bool keepCurrentTrack = false,
+}) async {
   final radioTracksNeededForInitialQueue = _radioTracksNeededForInitialQueue(radioMode);
 
   final tracksToAddCount = min(switch (radioMode) {
@@ -235,17 +240,31 @@ Future<void> startRadioPlaybackWithTracks(BaseItemDto source, RadioMode radioMod
   );
   _radioCacheStateStream.add(localResult);
 
-  await GetIt.instance<QueueService>().startPlayback(
-    items: tracksToAdd.toList(),
-    source: QueueItemSource(
-      type: QueueItemSourceType.radio,
-      name: QueueItemSourceName(type: QueueItemSourceNameType.radio, localizationParameter: source.name ?? ""),
-      id: source.id,
-      item: source,
-      library: GetIt.instance<FinampUserHelper>().currentUser?.currentViewId,
-    ),
-    skipRadioCacheInvalidation: true,
+  final queueService = GetIt.instance<QueueService>();
+  final radioSource = QueueItemSource(
+    type: QueueItemSourceType.radio,
+    name: QueueItemSourceName(type: QueueItemSourceNameType.radio, localizationParameter: source.name ?? ""),
+    id: source.id,
+    item: source,
+    library: GetIt.instance<FinampUserHelper>().currentUser?.currentViewId,
   );
+
+  if (keepCurrentTrack && queueService.getCurrentTrack() != null) {
+    await queueService.replaceUpcoming(
+      BasePlayableSlice(
+        items: tracksToAdd.toList(),
+        startingIndex: 0,
+        source: radioSource,
+        shuffleState: SliceShuffleState.linear,
+      ),
+    );
+  } else {
+    await queueService.startPlayback(
+      items: tracksToAdd.toList(),
+      source: radioSource,
+      skipRadioCacheInvalidation: true,
+    );
+  }
 
   if (identical(localResult, _radioCacheStateStream.value)) {
     _radioCacheStateStream.add(localResult.copyWith(queueing: false));
