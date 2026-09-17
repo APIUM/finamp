@@ -117,6 +117,7 @@ class CarPlayHelper {
   bool _isUpdatingNowPlayingButtons = false;
   int _recentQueueImageFillRun = 0;
   BaseItemId? _nowPlayingButtonsTrackId;
+  void Function()? _cancelRadioPreview;
 
   bool get isUserLoggedIn => _finampUserHelper.currentUser != null;
 
@@ -225,6 +226,9 @@ class CarPlayHelper {
 
   void onConnectionChange(ConnectionStatusTypes status) {
     connectionStatus = status;
+    if (status == ConnectionStatusTypes.disconnected) {
+      _cancelRadioPreview?.call();
+    }
     if (status == ConnectionStatusTypes.connected) {
       // Different head units allow different caps, so don't carry over a
       // previous connection's cached values.
@@ -266,8 +270,8 @@ class CarPlayHelper {
   }
 
   /// Builds and sends the CarPlay Now Playing screen buttons: shuffle
-  /// toggle, favourite, and start instant mix (leading to trailing). Shows
-  /// no buttons when logged out and hides favourite/mix when there is no
+  /// toggle, favourite, and start radio (leading to trailing). Shows
+  /// no buttons when logged out and hides favourite/radio when there is no
   /// current track or while offline.
   ///
   /// Overlapping calls are ignored.
@@ -312,21 +316,20 @@ class CarPlayHelper {
         ),
       );
 
-      final mixIcon = await _getIconFontImageUri(TablerIcons.radio, 40) ?? 'sfsymbol:radio';
+      final radioIcon = await _getIconFontImageUri(TablerIcons.radio, 40) ?? 'sfsymbol:radio';
       buttons.add(
         CPNowPlayingImageButton(
-          image: mixIcon,
+          image: radioIcon,
           onPress: () async {
             // Read the track at press time. The plugin keeps earlier
             // callbacks alive when a button update is skipped as redundant.
             final track = _queueService.getCurrentTrack()?.baseItem;
             if (track == null) return;
             try {
-              _carPlayLogger.info("Mix button pressed, starting an instant mix from '${track.name}'");
-              FinampSetters.setRadioMode(RadioMode.similar);
-              await radio.startRadioPlayback(track);
+              _carPlayLogger.info("Radio button pressed, previewing a radio from '${track.name}'");
+              await _showRadioPreview(track);
             } catch (e) {
-              _carPlayLogger.severe("Starting instant mix failed: $e");
+              _carPlayLogger.severe("Starting radio failed: $e");
               GlobalSnackbar.error(e);
             }
           },
@@ -335,6 +338,127 @@ class CarPlayHelper {
     }
 
     await FlutterCarplay.setNowPlayingButtons(buttons);
+  }
+
+  /// Shows a list of the tracks a radio seeded from [track] would play - the queue changes only when the user confirms.
+  Future<void> _showRadioPreview(BaseItemDto track) async {
+    if (_isPushingPageUpdate) {
+      _carPlayLogger.warning("Navigation dropped: already pushing page update");
+      return;
+    }
+
+    final generation = radio.generateRadioPreview(track, radioMode: RadioMode.similar).catchError((Object e) {
+      _carPlayLogger.severe("Radio preview generation failed: $e");
+      return (radioMode: RadioMode.similar, tracks: <BaseItemDto>[]);
+    });
+    final l10n = GlobalSnackbar.requireL10n;
+
+    var cancelled = false;
+    var starting = false;
+    var started = false;
+    var popped = false;
+
+    void endPreview() {
+      popped = true;
+      _cancelRadioPreview = null;
+      if (started) return;
+      cancelled = true;
+      radio.invalidateRadioCache();
+    }
+
+    Future<void> startRadio(BaseItemDto? firstTrack) async {
+      if (starting || started) return;
+      starting = true;
+      try {
+        final preview = await generation;
+        if (cancelled || preview.tracks.isEmpty) return;
+        final tracks = List.of(preview.tracks);
+        if (firstTrack != null) {
+          tracks.remove(firstTrack);
+          tracks.insert(0, firstTrack);
+        }
+        started = true;
+        await radio.startRadioPlaybackWithTracks(track, preview.radioMode, tracks);
+        _cancelRadioPreview = null;
+      } catch (e) {
+        started = false;
+        radio.invalidateRadioCache();
+        _carPlayLogger.severe("Starting radio failed: $e");
+        GlobalSnackbar.error(e);
+        return;
+      } finally {
+        starting = false;
+      }
+      if (popped) return;
+      try {
+        await FlutterCarplay.pop();
+      } catch (e) {
+        _carPlayLogger.warning("Failed to pop the radio preview: $e");
+      }
+    }
+
+    final template = CPListTemplate(
+      title: l10n.radioForItem(track.name ?? ""),
+      sections: [],
+      emptyViewTitleVariants: [l10n.loading],
+      trailingNavigationBarButtons: [CPBarButton(title: l10n.startRadio, onPress: () => unawaited(startRadio(null)))],
+      onPop: endPreview,
+    );
+
+    _cancelRadioPreview = endPreview;
+    var pushed = false;
+    _isPushingPageUpdate = true;
+    try {
+      pushed = await FlutterCarplay.push(template: template);
+      if (!pushed) {
+        // CarPlay allows five screens on the stack, so make room under Now Playing
+        _carPlayLogger.info("Radio preview refused, showing it above the root instead");
+        await FlutterCarplay.popToRoot(animated: false);
+        await FlutterCarplay.showSharedNowPlaying(animated: false);
+        pushed = await FlutterCarplay.push(template: template);
+      }
+    } finally {
+      _isPushingPageUpdate = false;
+    }
+
+    if (!pushed) {
+      _carPlayLogger.warning("Couldn't push the radio preview, starting radio from '${track.name}' directly");
+      _cancelRadioPreview = null;
+      final preview = await generation;
+      if (cancelled) return;
+      await radio.startRadioPlaybackWithTracks(track, preview.radioMode, preview.tracks);
+      return;
+    }
+
+    final preview = await generation;
+    if (cancelled) return;
+
+    final items = <CPListItem>[];
+    if (preview.tracks.isEmpty) {
+      _carPlayLogger.warning("Radio preview from '${track.name}' generated no tracks");
+      items.add(CPListItem(text: l10n.radioNoTracksFound));
+    } else {
+      for (final previewTrack in preview.tracks) {
+        items.add(
+          CPListItem(
+            text: previewTrack.name ?? l10n.unknown,
+            detailText: previewTrack.artists?.join(", ") ?? previewTrack.albumArtist,
+            image: _getCarPlayImageUri(previewTrack),
+            onPress: (complete, self) async {
+              try {
+                await startRadio(previewTrack);
+              } finally {
+                complete();
+              }
+            },
+          ),
+        );
+      }
+    }
+    await _flutterCarplay.updateListTemplateSections(
+      elementId: template.uniqueId,
+      sections: [CPListSection(items: items)],
+    );
   }
 
   List<CPListSection> _groupItemsIntoSections(
