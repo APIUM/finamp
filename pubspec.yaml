@@ -155,7 +155,7 @@ dependencies:
   flutter_carplay:
     git:
       url: https://github.com/finamp-app/flutter_carplay.git
-      ref: cf997048d5b51fbb60bf68bc53538e01a2378f55
+      ref: 8d243ea855bd40787a55b4492cd2ff6c6b8835f4
   diacritic: ^0.1.6
   mini_music_visualizer: ^1.1.4
 
@@ -204,12 +204,12 @@ dependency_overrides:
   audio_service:
     git:
       url: https://github.com/finamp-app/audio_service.git
-      ref: 32216a99e8359e7cd21282c72f1986fb7f9a5a4d
+      ref: 77d8a1253cb34ab398e3e7bc364629f46089a897
       path: audio_service
   audio_service_platform_interface:
     git:
       url: https://github.com/finamp-app/audio_service.git
-      ref: 32216a99e8359e7cd21282c72f1986fb7f9a5a4d
+      ref: 77d8a1253cb34ab398e3e7bc364629f46089a897
       path: audio_service_platform_interface
 
 # For information on the generic Dart part of this file, see the
