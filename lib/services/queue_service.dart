@@ -98,9 +98,7 @@ class QueueService {
   FinampStorableQueueInfo? _failedSavedQueue;
   static const int _maxSavedQueues = 60;
 
-  /// Memoised [Future] for [performInitialQueueLoad] so every caller awaits
-  /// the same restore.
-  Future<void>? _initialQueueLoadFuture;
+  final _initialQueueLoad = Completer<void>();
 
   static int get maxInitialQueueItems => Platform.isIOS || Platform.isMacOS
       ? 1000
@@ -396,14 +394,8 @@ class QueueService {
     return queueList;
   }
 
-  /// Performs the one-time startup queue restore, loading the last "latest"
-  /// queue into the player, paused, per [FinampSettings.autoloadLastQueueOnStartup].
-  /// Every caller awaits the same [Future].
-  Future<void> performInitialQueueLoad() {
-    return _initialQueueLoadFuture ??= _performInitialQueueLoad();
-  }
-
-  Future<void> _performInitialQueueLoad() async {
+  /// Startup queue restore, called once from main().
+  Future<void> performInitialQueueLoad() async {
     try {
       _savedQueueState = SavedQueueState.init;
       archiveSavedQueue(inInit: true);
@@ -426,22 +418,33 @@ class QueueService {
       }
     } catch (e) {
       _queueServiceLogger.severe(e);
-      // Don't memoise a failed restore, so a later caller (e.g. a remote
-      // play command) can retry it instead of being stuck forever.
-      _initialQueueLoadFuture = null;
       rethrow;
+    } finally {
+      if (!_initialQueueLoad.isCompleted) {
+        _initialQueueLoad.complete();
+      }
     }
   }
 
-  /// Loads the latest saved queue on demand, for callers where
-  /// [performInitialQueueLoad] skipped loading it (e.g.
-  /// [FinampSettings.autoloadLastQueueOnStartup] disabled) but an explicit
-  /// play command expresses intent to resume anyway.
-  Future<void> loadLatestSavedQueueOnDemand() async {
-    var info = _queuesBox.get("latest");
-    if (info != null) {
-      await loadSavedQueue(info);
+  /// Completes when the startup restore finishes, and never errors.
+  Future<void> get initialQueueLoaded => _initialQueueLoad.future;
+
+  /// Waits for the startup restore, then loads the latest saved queue if that restore skipped it.
+  Future<bool> ensureQueueLoaded() async {
+    await _initialQueueLoad.future;
+    if (_currentTrack == null && _audioHandler.audioSources.isEmpty) {
+      if (_savedQueueState == SavedQueueState.failed) {
+        await retryQueueLoad();
+      } else if (_savedQueueState == SavedQueueState.pendingSave) {
+        final info = _queuesBox.get("latest");
+        if (info != null) {
+          await loadSavedQueue(info);
+        }
+      }
     }
+    return _currentTrack != null ||
+        _audioHandler.audioSources.isNotEmpty ||
+        _savedQueueState == SavedQueueState.loading;
   }
 
   Future<bool> _hasInitialPlayLink() async {
@@ -1347,8 +1350,6 @@ class QueueService {
   FinampQueueItem? getCurrentTrack() {
     return _currentTrack;
   }
-
-  SavedQueueState get savedQueueState => _savedQueueState;
 
   set playbackSpeed(double speed) {
     _playbackSpeed = speed;
